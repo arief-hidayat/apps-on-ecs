@@ -11,6 +11,8 @@ const app = new cdk.App();
 new AppsOnEcsStack(app, 'AppsOnEcsStack', {
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION },
   vpcName: 'AriefhInfraStack/dev-vpc',
+  ecsClusterName: 'AriefhEcsClusterStack-ecscluster7830E7B5-PtVsFrRPxFMU',
+  ecsClusterSgIds: ['sg-0d902126668d28b3d', 'sg-0dd10b9487ef04e7a'],
   svcConnect: {
     dnsNamespace: 'dev.ariefh.internal',
     proxyCpu: 256,
@@ -84,7 +86,6 @@ new AppsOnEcsStack(app, 'AppsOnEcsStack', {
         }
       }
     },
-
     {
       svcName: "app2",
       desiredCount: 1,

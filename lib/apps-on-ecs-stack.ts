@@ -4,6 +4,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as efs from 'aws-cdk-lib/aws-efs';
+import * as servicediscovery from 'aws-cdk-lib/aws-servicediscovery';
 import { Construct } from 'constructs';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -67,9 +68,10 @@ interface EcsSvcConnect {
   proxyMemoryLimit: number,
 }
 
-
 interface AppsOnEcsStackProps extends cdk.StackProps {
   vpcName: string
+  ecsClusterName: string
+  ecsClusterSgIds: string[]
   svcConnect?: EcsSvcConnect
   asg: Asg
   services: EcsSvc[]
@@ -82,37 +84,25 @@ export class AppsOnEcsStack extends cdk.Stack {
     const vpc = ec2.Vpc.fromLookup(this, 'dev-vpc', {vpcName: props.vpcName});
     const svcConnect = props.svcConnect
     // ECS cluster on EC2 with cluster ASG capacity provider
-    const ecsCluster = svcConnect ? 
-                        new ecs.Cluster(this, 'ecs-cluster', {vpc: vpc, containerInsights: true, defaultCloudMapNamespace: {name: svcConnect.dnsNamespace, useForServiceConnect: true}}) :
-                        new ecs.Cluster(this, 'ecs-cluster', {vpc: vpc, containerInsights: true});
-    const ecsforEC2Role = iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonEC2ContainerServiceforEC2Role')
-    const ecsRole = new iam.Role(this, 'ecs-role', {
-      assumedBy: new iam.CompositePrincipal(new iam.ServicePrincipal('ec2.amazonaws.com')), managedPolicies: [ecsforEC2Role]
-    });
-    const asg = new autoscaling.AutoScalingGroup(this, 'ecs-asg', {
-      instanceType: props.asg.instanceType,
-      machineImage: props.asg.machineImage,
-      desiredCapacity: props.asg.desiredCapacity,
-      minCapacity: props.asg.minCapacity,
-      maxCapacity: props.asg.maxCapacity,
-      cooldown: props.asg.cooldown,
-      role: ecsRole,
-      vpc: vpc,
-    });
-    const capacityProvider = new ecs.AsgCapacityProvider(this, 'asg-cp', { capacityProviderName: `${this.stackName}-sg`, autoScalingGroup: asg, enableManagedTerminationProtection: false });
-    ecsCluster.addAsgCapacityProvider(capacityProvider);
-
+    const ecsClusterSgs: ec2.ISecurityGroup[] = []
+    props.ecsClusterSgIds.forEach((sgId) => {
+      ecsClusterSgs.push(ec2.SecurityGroup.fromLookupById(this, sgId, sgId))
+    })
+    const ecsCluster = ecs.Cluster.fromClusterAttributes(this, 'ecs-cluster', {vpc: vpc, clusterName: props.ecsClusterName, securityGroups: ecsClusterSgs});
     // security groups
     const dbSG = new ec2.SecurityGroup(this, 'DBSG', { vpc });
     const appSG = new ec2.SecurityGroup(this, 'AppSG', { vpc });
     const lbSG = new ec2.SecurityGroup(this, 'LBSG', { vpc });
     dbSG.addIngressRule(ec2.Peer.securityGroupId(appSG.securityGroupId), ec2.Port.tcp(3306));
     appSG.addIngressRule(ec2.Peer.securityGroupId(lbSG.securityGroupId), ec2.Port.tcp(80));
+    // allow service-to-service
+    appSG.addIngressRule(ec2.Peer.securityGroupId(appSG.securityGroupId), ec2.Port.allTcp());
 
     const albMap: { [id: string]: elbv2.ApplicationListener; } = {};
 
     const logGroup = new logs.LogGroup(this, 'log-group', {retention: logs.RetentionDays.ONE_WEEK})
 
+    const ecsServiceMap: { [id: string]: ecs.IEc2Service; } = {};
     // services
     for(let svc of props.services) {
       const cntr = svc.cntr
@@ -223,6 +213,7 @@ export class AppsOnEcsStack extends cdk.Stack {
         })
       }
     }: ecsSvcProps);
+    ecsServiceMap[svc.svcName] = albService
 
     // albService.node.addDependency(rdsInstance);
     const albObj: Alb = svc.alb
